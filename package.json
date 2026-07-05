@@ -1,0 +1,44 @@
+{
+  "name": "codegraph",
+  "version": "0.1.0",
+  "description": "Open-source code knowledge graph: indexes your repo into a symbol graph, keeps it updated on every commit, and serves it to any AI coding tool (Claude Code, Cursor, Codex, Antigravity) via MCP.",
+  "license": "MIT",
+  "type": "module",
+  "bin": {
+    "codegraph": "dist/cli.js"
+  },
+  "main": "dist/index.js",
+  "files": [
+    "dist"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "prepublishOnly": "npm run build"
+  },
+  "keywords": [
+    "code-graph",
+    "mcp",
+    "tree-sitter",
+    "ai",
+    "context",
+    "knowledge-graph",
+    "static-analysis"
+  ],
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.12.0",
+    "better-sqlite3": "^12.11.1",
+    "commander": "^12.1.0",
+    "tree-sitter-wasms": "^0.1.12",
+    "web-tree-sitter": "^0.24.7",
+    "zod": "^3.24.0"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.12",
+    "@types/node": "^22.10.0",
+    "typescript": "^5.7.0"
+  }
+}
