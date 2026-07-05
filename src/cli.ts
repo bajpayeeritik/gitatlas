@@ -135,6 +135,61 @@ program
   });
 
 program
+  .command("callees <name>")
+  .description("List everything a symbol calls/references")
+  .option("-r, --root <path>", "repository root", process.cwd())
+  .action((name, opts) => {
+    const db = new GraphDB(resolveRoot(opts));
+    const sources = db.findSymbols(name);
+    if (sources.length === 0) {
+      console.log(`No symbol named '${name}'.`);
+    } else {
+      const callees = db.calleesOf(sources.map((s) => s.id));
+      console.log(`'${name}' calls/references ${callees.length} indexed symbol(s):`);
+      for (const s of callees) {
+        console.log(`  ${s.kind} ${s.qualified_name}  ${s.path}:${s.start_line}`);
+      }
+    }
+    db.close();
+  });
+
+program
+  .command("outline <file>")
+  .description("List all symbols defined in a file")
+  .option("-r, --root <path>", "repository root", process.cwd())
+  .action((file, opts) => {
+    const db = new GraphDB(resolveRoot(opts));
+    const rows = db.fileSymbols(file.replace(/\\/g, "/"));
+    if (rows.length === 0) console.log(`No indexed symbols in '${file}'.`);
+    for (const s of rows) {
+      console.log(`${s.kind} ${s.qualified_name}  :${s.start_line}-${s.end_line}`);
+      console.log(`  ${s.signature}`);
+    }
+    db.close();
+  });
+
+program
+  .command("impact <file>")
+  .description("Blast radius: symbols elsewhere that depend on this file")
+  .option("-r, --root <path>", "repository root", process.cwd())
+  .action((file, opts) => {
+    const db = new GraphDB(resolveRoot(opts));
+    const p = file.replace(/\\/g, "/");
+    const defined = db.fileSymbols(p);
+    if (defined.length === 0) {
+      console.log(`No indexed symbols in '${p}'.`);
+    } else {
+      const direct = db.callersOf(defined.map((d) => d.id));
+      const external = direct.filter((s) => s.path !== p);
+      console.log(`${defined.length} symbols defined; ${external.length} external dependent(s):`);
+      for (const s of external) {
+        console.log(`  ${s.kind} ${s.qualified_name}  ${s.path}:${s.start_line}`);
+      }
+    }
+    db.close();
+  });
+
+program
   .command("context <query...>")
   .description("Rank + pack the most relevant code snippets for a query")
   .option("-r, --root <path>", "repository root", process.cwd())
