@@ -52,24 +52,35 @@ export interface ContextChunk {
   snippet: string;
 }
 
-const SNIPPET_MAX_LINES = 50;
+export interface ContextResult {
+  /** top hits with full source snippets */
+  chunks: ContextChunk[];
+  /** runner-up hits, signature-only (agent can ask for more) */
+  brief: { symbol: SymbolRow; score: number }[];
+}
+
+const SNIPPET_MAX_LINES = 40;
+const MAX_FULL_SNIPPETS = 3;
+const MAX_BRIEF = 12;
 
 /**
  * Rank symbols against a natural-language query (lexical match on name,
- * signature, and path, boosted by PageRank centrality) and pack source
- * snippets under a token budget (~4 chars/token heuristic).
+ * signature, and path, boosted by PageRank centrality) and pack results
+ * under a token budget (~4 chars/token heuristic). Token-frugal by design:
+ * only the top hits get full source; the rest are one-line signatures, and
+ * overlapping symbols (a class and its own methods) are deduplicated.
  */
 export function findContext(
   db: GraphDB,
   root: string,
   query: string,
   tokenBudget: number
-): ContextChunk[] {
+): ContextResult {
   const terms = query
     .toLowerCase()
     .split(/[^a-z0-9_]+/)
     .filter((t) => t.length > 2);
-  if (terms.length === 0) return [];
+  if (terms.length === 0) return { chunks: [], brief: [] };
 
   const ranks = pagerank(db);
   let maxRank = 0;
@@ -94,33 +105,51 @@ export function findContext(
   scored.sort((a, b) => b.score - a.score);
 
   const chunks: ContextChunk[] = [];
+  const brief: { symbol: SymbolRow; score: number }[] = [];
   let budgetLeft = tokenBudget;
   const fileCache = new Map<string, string[] | null>();
+  const overlaps = (s: SymbolRow) =>
+    chunks.some(
+      (c) =>
+        c.symbol.path === s.path &&
+        // either range contains the other -> same code would repeat
+        ((c.symbol.start_line <= s.start_line && c.symbol.end_line >= s.end_line) ||
+          (s.start_line <= c.symbol.start_line && s.end_line >= c.symbol.end_line))
+    );
 
   for (const { symbol, score } of scored) {
-    if (budgetLeft <= 0 || chunks.length >= 30) break;
-    let lines = fileCache.get(symbol.path);
-    if (lines === undefined) {
-      try {
-        lines = fs
-          .readFileSync(path.join(root, symbol.path), "utf8")
-          .split("\n");
-      } catch {
-        lines = null;
+    if (budgetLeft <= 0) break;
+    if (overlaps(symbol)) continue;
+    if (chunks.length < MAX_FULL_SNIPPETS) {
+      let lines = fileCache.get(symbol.path);
+      if (lines === undefined) {
+        try {
+          lines = fs
+            .readFileSync(path.join(root, symbol.path), "utf8")
+            .split("\n");
+        } catch {
+          lines = null;
+        }
+        fileCache.set(symbol.path, lines);
       }
-      fileCache.set(symbol.path, lines);
+      if (!lines) continue;
+      const end = Math.min(
+        symbol.end_line,
+        symbol.start_line + SNIPPET_MAX_LINES - 1,
+        lines.length
+      );
+      const snippet = lines.slice(symbol.start_line - 1, end).join("\n");
+      const cost = Math.ceil(snippet.length / 4) + 20;
+      if (cost > budgetLeft && chunks.length > 0) continue;
+      budgetLeft -= cost;
+      chunks.push({ symbol, score, snippet });
+    } else {
+      if (brief.length >= MAX_BRIEF) break;
+      const cost = 20;
+      if (cost > budgetLeft) break;
+      budgetLeft -= cost;
+      brief.push({ symbol, score });
     }
-    if (!lines) continue;
-    const end = Math.min(
-      symbol.end_line,
-      symbol.start_line + SNIPPET_MAX_LINES - 1,
-      lines.length
-    );
-    const snippet = lines.slice(symbol.start_line - 1, end).join("\n");
-    const cost = Math.ceil(snippet.length / 4) + 20;
-    if (cost > budgetLeft && chunks.length > 0) continue;
-    budgetLeft -= cost;
-    chunks.push({ symbol, score, snippet });
   }
-  return chunks;
+  return { chunks, brief };
 }

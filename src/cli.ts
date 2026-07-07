@@ -4,6 +4,7 @@ import path from "node:path";
 import { indexRepo } from "./indexer/indexer.js";
 import { GraphDB } from "./graph/db.js";
 import { findContext } from "./graph/rank.js";
+import { compactSymbolList, repoMap } from "./graph/format.js";
 import { serveMcp } from "./mcp/server.js";
 import { installHooks, uninstallHooks } from "./hook.js";
 
@@ -127,9 +128,7 @@ program
     } else {
       const callers = db.callersOf(targets.map((t) => t.id));
       console.log(`${callers.length} caller(s) of '${name}':`);
-      for (const s of callers) {
-        console.log(`  ${s.kind} ${s.qualified_name}  ${s.path}:${s.start_line}`);
-      }
+      console.log(compactSymbolList(callers));
     }
     db.close();
   });
@@ -146,9 +145,7 @@ program
     } else {
       const callees = db.calleesOf(sources.map((s) => s.id));
       console.log(`'${name}' calls/references ${callees.length} indexed symbol(s):`);
-      for (const s of callees) {
-        console.log(`  ${s.kind} ${s.qualified_name}  ${s.path}:${s.start_line}`);
-      }
+      console.log(compactSymbolList(callees));
     }
     db.close();
   });
@@ -182,10 +179,19 @@ program
       const direct = db.callersOf(defined.map((d) => d.id));
       const external = direct.filter((s) => s.path !== p);
       console.log(`${defined.length} symbols defined; ${external.length} external dependent(s):`);
-      for (const s of external) {
-        console.log(`  ${s.kind} ${s.qualified_name}  ${s.path}:${s.start_line}`);
-      }
+      console.log(compactSymbolList(external));
     }
+    db.close();
+  });
+
+program
+  .command("repo-map")
+  .description("Compact orientation map: most central symbols, signatures only")
+  .option("-r, --root <path>", "repository root", process.cwd())
+  .option("-b, --budget <tokens>", "token budget", "1200")
+  .action((opts) => {
+    const db = new GraphDB(resolveRoot(opts));
+    console.log(repoMap(db, parseInt(opts.budget, 10)));
     db.close();
   });
 
@@ -197,13 +203,21 @@ program
   .action((queryWords, opts) => {
     const root = resolveRoot(opts);
     const db = new GraphDB(root);
-    const chunks = findContext(db, root, queryWords.join(" "), parseInt(opts.budget, 10));
+    const { chunks, brief } = findContext(
+      db, root, queryWords.join(" "), parseInt(opts.budget, 10)
+    );
     if (chunks.length === 0) console.log("No relevant symbols found.");
     for (const c of chunks) {
       console.log(
-        `\n### ${c.symbol.kind} ${c.symbol.qualified_name} (${c.symbol.path}:${c.symbol.start_line}) score=${c.score.toFixed(2)}`
+        `\n### ${c.symbol.kind} ${c.symbol.qualified_name} (${c.symbol.path}:${c.symbol.start_line})`
       );
       console.log(c.snippet);
+    }
+    if (brief.length > 0) {
+      console.log("\nAlso relevant:");
+      for (const b of brief) {
+        console.log(`  ${b.symbol.qualified_name} ${b.symbol.path}:${b.symbol.start_line}`);
+      }
     }
     db.close();
   });

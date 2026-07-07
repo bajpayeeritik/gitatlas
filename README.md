@@ -80,7 +80,8 @@ Once connected, the agent gets these tools:
 
 | Tool | What it answers |
 |---|---|
-| `find_context` | "Give me the most relevant code for this task" — ranked by lexical match × graph centrality (PageRank), packed under a token budget |
+| `repo_map` | One-shot orientation: the most central symbols in the repo, grouped by file, signatures only |
+| `find_context` | "Give me the most relevant code for this task" — ranked by lexical match × graph centrality (PageRank), packed under a token budget; top hits as source, runners-up as signatures |
 | `who_calls` | Reverse dependencies: everything that calls/references a symbol |
 | `what_it_calls` | Forward dependencies of a symbol |
 | `impact_of_change` | Blast radius of editing a file (direct + 1-hop transitive dependents) |
@@ -106,6 +107,7 @@ codegraph callers UserCodingData       # who uses it?
 codegraph callees AnalysisController   # what does it depend on?
 codegraph outline src/service/Foo.java # file structure without reading it
 codegraph impact src/service/Foo.java  # what breaks if I change this file?
+codegraph repo-map --budget 1200       # whole-repo orientation map
 codegraph context "how does retry work" --budget 3000   # ranked snippets
 ```
 
@@ -117,11 +119,13 @@ Benchmark on a real repo (a Java Spring microservice + Chrome extension): 8 deve
 
 | Metric | With codegraph | Without |
 |---|---|---|
-| Context tokens the agent must read | **4,465** | 57,781 |
+| Context tokens the agent must read | **3,678** | 57,882 |
 | Tool invocations | **8** | 23 |
 | Dead ends (search term had zero hits) | **0** | 1 |
 
-Highlights: "who uses this DTO?" was 708 tokens vs 10,759; a 629-line service file's structure was 727 tokens vs 7,269; and where `grep retry` returned nothing, ranked graph retrieval still surfaced the right methods. The gap grows with repo size — grep-and-read cost scales with the codebase, graph query cost doesn't.
+Highlights: "who uses this DTO?" was 248 tokens vs 10,515 (results are grouped by file, so paths and class prefixes appear once); a 629-line service file's structure was 758 tokens vs 7,452; and where `grep retry` returned nothing, ranked graph retrieval still surfaced the right methods. The gap grows with repo size — grep-and-read cost scales with the codebase, graph query cost doesn't.
+
+Output is token-frugal by design: `find_context` returns full source only for the top hits and one-line signatures for runners-up; list-returning tools group by file and collapse repeated prefixes; `repo_map` gives an agent a whole-repo orientation (most central symbols, signatures only) for a few hundred tokens.
 
 ## How it works
 
