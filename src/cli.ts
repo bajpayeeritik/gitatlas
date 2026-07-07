@@ -11,11 +11,11 @@ import { installHooks, uninstallHooks } from "./hook.js";
 const program = new Command();
 
 program
-  .name("codegraph")
+  .name("gitatlas")
   .description(
-    "Code knowledge graph: index your repo, keep it fresh on every commit, and serve it to AI tools over MCP."
+    "The code graph that lives in your git history: index your repo, keep it fresh on every commit, and serve it to AI tools over MCP."
   )
-  .version("0.1.0");
+  .version("0.2.0");
 
 function resolveRoot(opts: { root?: string }): string {
   return path.resolve(opts.root ?? process.cwd());

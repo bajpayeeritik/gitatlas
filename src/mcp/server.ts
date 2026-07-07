@@ -25,7 +25,7 @@ export async function serveMcp(root: string): Promise<void> {
   }
   const db = new GraphDB(root);
 
-  const server = new McpServer({ name: "codegraph", version: "0.1.0" });
+  const server = new McpServer({ name: "gitatlas", version: "0.2.0" });
 
   server.registerTool(
     "repo_map",

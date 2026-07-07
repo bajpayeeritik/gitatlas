@@ -2,7 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-const MARKER = "# codegraph auto-update";
+const MARKER = "# gitatlas auto-update";
 const HOOKS = ["post-commit", "post-merge", "post-checkout"];
 
 function toPosix(p: string): string {

@@ -1,11 +1,15 @@
 {
-  "name": "codegraph",
-  "version": "0.1.0",
-  "description": "Open-source code knowledge graph: indexes your repo into a symbol graph, keeps it updated on every commit, and serves it to any AI coding tool (Claude Code, Cursor, Codex, Antigravity) via MCP.",
+  "name": "gitatlas",
+  "version": "0.2.0",
+  "description": "The code graph that lives in your git history - built once, correct at every commit, served to every AI coding tool via MCP.",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/bajpayeeritik/gitatlas.git"
+  },
   "type": "module",
   "bin": {
-    "codegraph": "dist/cli.js"
+    "gitatlas": "dist/cli.js"
   },
   "main": "dist/index.js",
   "files": [

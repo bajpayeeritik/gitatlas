@@ -50,7 +50,7 @@ CREATE TABLE IF NOT EXISTS meta (
 );
 `;
 
-export const DB_DIR = ".codegraph";
+export const DB_DIR = ".gitatlas";
 export const DB_FILE = "graph.db";
 
 export function dbPath(root: string): string {
