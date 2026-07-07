@@ -121,7 +121,7 @@ Benchmark on a real repo (a Java Spring microservice + Chrome extension): 8 deve
 
 | Metric | With codegraph | Without |
 |---|---|---|
-| Context tokens the agent must read | **3,678** | 57,882 |
+| Context tokens the agent must read | **3,241** | 57,882 |
 | Tool invocations | **8** | 23 |
 | Dead ends (search term had zero hits) | **0** | 1 |
 
@@ -130,6 +130,8 @@ Highlights: "who uses this DTO?" was 248 tokens vs 10,515 (results are grouped b
 Output is token-frugal by design: `find_context` returns full source only for the top hits and one-line signatures for runners-up; list-returning tools group by file and collapse repeated prefixes; `repo_map` gives an agent a whole-repo orientation (most central symbols, signatures only) for a few hundred tokens.
 
 Real tasks usually embed an identifier — "handle the case where `checkIsFse` returns false". `find_context` detects such anchors and answers with the definition plus a ±4-line window around every reference site instead of whole enclosing functions: on a representative query this cut output from ~945 to ~354 tokens while *increasing* coverage (every call site, not just the top-ranked three). Generic task words ("handle", "cases", "false") are stopworded so they can't drag in irrelevant code.
+
+Paraphrases anchor too: developers paraphrase identifiers by splitting them into words, so symbols are matched by subtoken coverage — "the FSE check" finds `checkIsFse`, "the perplexity configured check" finds `isConfigured` — with no embeddings and no extra dependencies. Embedding fusion (on the roadmap) is then only needed for true synonyms, e.g. "auth" → `login`.
 
 ## How it works
 

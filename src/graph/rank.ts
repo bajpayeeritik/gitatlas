@@ -147,7 +147,38 @@ export function usageContext(
   return out.join("\n");
 }
 
-/** camelCase/snake_case tokens in the query that name indexed symbols. */
+/** checkIsFse -> [check, fse]; snake_case and acronym runs handled too. */
+export function splitIdentifier(name: string): string[] {
+  return name
+    .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+    .replace(/([A-Z]+)([A-Z][a-z])/g, "$1 $2")
+    .split(/[^A-Za-z0-9]+/)
+    .map((t) => t.toLowerCase())
+    .filter((t) => t.length >= 3);
+}
+
+const tokenCache = new WeakMap<
+  GraphDB,
+  { stamp: string; entries: { name: string; toks: Set<string> }[] }
+>();
+
+function symbolTokens(db: GraphDB) {
+  const stamp = db.getMeta("last_indexed") ?? "";
+  const cached = tokenCache.get(db);
+  if (cached && cached.stamp === stamp) return cached.entries;
+  const entries = db
+    .allSymbolNames()
+    .map((name) => ({ name, toks: new Set(splitIdentifier(name)) }));
+  tokenCache.set(db, { stamp, entries });
+  return entries;
+}
+
+/**
+ * Query tokens that name indexed symbols — exactly, or by paraphrase.
+ * People paraphrase identifiers by splitting them into words ("the FSE
+ * check" for checkIsFse), so a symbol whose subtokens are well covered by
+ * query words is an anchor too. No embeddings needed for this case.
+ */
 export function detectAnchors(db: GraphDB, query: string, max = 3): string[] {
   const tokens = [...new Set(query.match(/[A-Za-z_][A-Za-z0-9_]{2,}/g) ?? [])]
     // longer tokens first: identifiers beat words like "handle" or "return"
@@ -157,6 +188,37 @@ export function detectAnchors(db: GraphDB, query: string, max = 3): string[] {
     if (anchors.length >= max) break;
     const canonical = db.resolveName(t);
     if (canonical && !anchors.includes(canonical)) anchors.push(canonical);
+  }
+
+  if (anchors.length < max) {
+    const qset = new Set(
+      tokens
+        .flatMap((t) => splitIdentifier(t))
+        .filter((t) => !TASK_STOPWORDS.has(t))
+    );
+    const cands: { name: string; matched: number; cov: number; long: number }[] = [];
+    for (const { name, toks } of symbolTokens(db)) {
+      if (toks.size === 0 || anchors.includes(name)) continue;
+      let matched = 0;
+      let long = 0;
+      for (const st of toks) {
+        if (qset.has(st)) {
+          matched++;
+          long = Math.max(long, st.length);
+        }
+      }
+      const cov = matched / toks.size;
+      // two shared words with half the name covered, or one rare long word
+      // covering the whole name (isConfigured <- "configured")
+      if ((matched >= 2 && cov >= 0.5) || (matched === 1 && cov === 1 && long >= 6)) {
+        cands.push({ name, matched, cov, long });
+      }
+    }
+    cands.sort((a, b) => b.matched - a.matched || b.cov - a.cov || b.long - a.long);
+    for (const c of cands) {
+      if (anchors.length >= max) break;
+      anchors.push(c.name);
+    }
   }
   return anchors;
 }

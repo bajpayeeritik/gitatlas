@@ -202,6 +202,14 @@ export class GraphDB {
       .all(`%${pattern}%`, limit) as SymbolRow[];
   }
 
+  allSymbolNames(): string[] {
+    return (
+      this.db.prepare("SELECT DISTINCT name FROM symbols").all() as {
+        name: string;
+      }[]
+    ).map((r) => r.name);
+  }
+
   /** Canonical symbol name for a query token (case-insensitive), if indexed. */
   resolveName(token: string): string | undefined {
     const row = this.db
