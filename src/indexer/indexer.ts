@@ -57,7 +57,7 @@ export interface IndexOptions {
 }
 
 /** Bump when extraction logic changes so cached parses are invalidated. */
-const EXTRACTOR_VERSION = "5";
+const EXTRACTOR_VERSION = "6";
 
 /**
  * Index the repo incrementally: content-hash every candidate file, re-extract

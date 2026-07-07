@@ -98,6 +98,41 @@ args = ["serve", "--root", "."]
 
 Any other stdio MCP client works with the same `command` + `args`.
 
+## PR blast radius (GitHub Action)
+
+Put the graph in front of your whole team — no installs required. One workflow file and every pull request gets a sticky comment: which symbols the PR touches, and everything elsewhere that depends on them.
+
+```yaml
+# .github/workflows/blast-radius.yml
+name: blast radius
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+permissions:
+  contents: read
+  pull-requests: write
+concurrency:
+  group: blast-radius-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+jobs:
+  impact:
+    if: ${{ !github.event.pull_request.draft }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: bajpayeeritik/gitatlas@main
+```
+
+Debounced at every layer, because a noisy PR bot gets uninstalled:
+
+1. **One sticky comment per PR**, updated in place — never a new comment per push.
+2. **Fingerprint skip** — if a push doesn't change the impact analysis, the comment isn't even edited (no notification churn).
+3. **Concurrency cancel** — rapid pushes cancel superseded runs.
+4. **Relevance gate** — docs-only PRs exit before indexing anything.
+5. **Event + draft filtering** — runs only on `opened`/`synchronize`/`reopened`/`ready_for_review`, skips drafts.
+
+The same report is available locally: `gitatlas impact-report <changed files...>`.
+
 ### MCP tools
 
 | Tool | What it answers |
@@ -148,7 +183,7 @@ If you want 30-language editor-session indexing with a bundled binary and file w
 
 ## Roadmap
 
-- [ ] PR blast-radius GitHub Action (impact analysis as a PR comment)
+- [x] PR blast-radius GitHub Action (impact analysis as a sticky PR comment)
 - [ ] Graph-by-SHA caching in CI: build once, distribute to the team
 - [ ] SCIP/LSP-based precise symbol resolution
 - [ ] Graph time-travel: query the graph at any commit; semantic changelogs

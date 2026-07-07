@@ -1,0 +1,107 @@
+name: "gitatlas blast radius"
+description: >-
+  Comments the blast radius of a pull request using the gitatlas code graph:
+  what the changed files define and everything elsewhere that depends on it.
+  One sticky comment per PR, updated in place, skipped entirely when nothing
+  relevant changed.
+author: "bajpayeeritik"
+branding:
+  icon: "map"
+  color: "purple"
+
+inputs:
+  github-token:
+    description: "Token used to read PR files and write the sticky comment"
+    required: false
+    default: ${{ github.token }}
+  version:
+    description: >-
+      gitatlas version to install from npm, or 'source' to build the
+      checked-out repository itself (used by gitatlas's own CI)
+    required: false
+    default: "latest"
+  comment-on-no-changes:
+    description: "Post/update the comment even when no indexed source files changed"
+    required: false
+    default: "false"
+
+runs:
+  using: "composite"
+  steps:
+    - name: Find changed source files
+      id: changed
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+      run: |
+        set -euo pipefail
+        pr="${{ github.event.pull_request.number }}"
+        if [ -z "$pr" ]; then
+          echo "Not a pull_request event; nothing to do."
+          echo "skip=true" >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
+        gh api "repos/${GITHUB_REPOSITORY}/pulls/${pr}/files" --paginate \
+          --jq '.[] | select(.status != "removed") | .filename' \
+          > "$RUNNER_TEMP/gitatlas_all_changed.txt"
+        grep -E '\.(ts|tsx|js|jsx|mjs|cjs|mts|cts|java|py)$' \
+          "$RUNNER_TEMP/gitatlas_all_changed.txt" \
+          > "$RUNNER_TEMP/gitatlas_changed.txt" || true
+        if [ ! -s "$RUNNER_TEMP/gitatlas_changed.txt" ] && \
+           [ "${{ inputs.comment-on-no-changes }}" != "true" ]; then
+          echo "Debounce: no indexed source files changed; skipping."
+          echo "skip=true" >> "$GITHUB_OUTPUT"
+        else
+          echo "skip=false" >> "$GITHUB_OUTPUT"
+        fi
+
+    - name: Install gitatlas
+      if: steps.changed.outputs.skip != 'true'
+      shell: bash
+      run: |
+        set -euo pipefail
+        if [ "${{ inputs.version }}" = "source" ]; then
+          npm ci
+          npm run build
+          npm link
+        else
+          npm install -g "gitatlas@${{ inputs.version }}"
+        fi
+
+    - name: Index repo and build report
+      if: steps.changed.outputs.skip != 'true'
+      shell: bash
+      run: |
+        set -euo pipefail
+        gitatlas index --root .
+        gitatlas impact-report --root . \
+          < "$RUNNER_TEMP/gitatlas_changed.txt" \
+          > "$RUNNER_TEMP/gitatlas_report.md"
+
+    - name: Upsert sticky comment (fingerprint-debounced)
+      if: steps.changed.outputs.skip != 'true'
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+      run: |
+        set -euo pipefail
+        pr="${{ github.event.pull_request.number }}"
+        report="$RUNNER_TEMP/gitatlas_report.md"
+        new_fp=$(grep -oE 'gitatlas-fingerprint: [a-f0-9]+' "$report" || true)
+        cid=$(gh api "repos/${GITHUB_REPOSITORY}/issues/${pr}/comments" --paginate \
+          --jq '[.[] | select(.body | contains("<!-- gitatlas-blast-radius -->"))][0].id // empty')
+        if [ -n "$cid" ]; then
+          old_fp=$(gh api "repos/${GITHUB_REPOSITORY}/issues/comments/${cid}" \
+            --jq .body | grep -oE 'gitatlas-fingerprint: [a-f0-9]+' || true)
+          if [ -n "$new_fp" ] && [ "$new_fp" = "$old_fp" ]; then
+            echo "Debounce: impact unchanged; leaving comment ${cid} untouched."
+            exit 0
+          fi
+          gh api -X PATCH "repos/${GITHUB_REPOSITORY}/issues/comments/${cid}" \
+            -F "body=@${report}" > /dev/null
+          echo "Updated sticky comment ${cid}."
+        else
+          gh api -X POST "repos/${GITHUB_REPOSITORY}/issues/${pr}/comments" \
+            -F "body=@${report}" > /dev/null
+          echo "Posted sticky comment."
+        fi

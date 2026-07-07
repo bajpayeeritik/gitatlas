@@ -146,11 +146,14 @@ export class GraphDB {
 
   /**
    * Link phase: rebuild the edges table by resolving refs to symbol
-   * definitions by name. Same-name collisions produce edges to every
-   * candidate definition (documented MVP limitation; SCIP-precision
-   * resolution is on the roadmap).
+   * definitions by name, within the same language family — a Java call can
+   * never resolve to a JS symbol. Same-name collisions within a family still
+   * produce edges to every candidate (documented MVP limitation;
+   * SCIP-precision resolution is on the roadmap).
    */
   link(): number {
+    const family = (col: string) =>
+      `CASE ${col} WHEN 'typescript' THEN 'js' WHEN 'tsx' THEN 'js' WHEN 'javascript' THEN 'js' ELSE ${col} END`;
     const tx = this.db.transaction(() => {
       this.db.exec("DELETE FROM edges");
       this.db.exec(`
@@ -158,8 +161,11 @@ export class GraphDB {
         SELECT r.from_symbol_id, s.id, r.kind
         FROM refs r
         JOIN symbols s ON s.name = r.name
+        JOIN files rf ON rf.id = r.file_id
+        JOIN files sf ON sf.id = s.file_id
         WHERE r.from_symbol_id IS NOT NULL
           AND s.id != r.from_symbol_id
+          AND ${family("rf.language")} = ${family("sf.language")}
       `);
     });
     tx();
