@@ -104,12 +104,16 @@ class Extraction {
     ) {
       resolvedKind = "method";
     }
+    // Signature = the source line holding the symbol's name, which skips
+    // annotations/decorators (even multi-line ones) reliably.
+    const nameLineOffset = nameNode.startPosition.row - node.startPosition.row;
+    const sigLine = node.text.split("\n")[nameLineOffset]?.trim();
     this.symbols.push({
       name: nameNode.text,
       kind: resolvedKind,
       startLine: node.startPosition.row + 1,
       endLine: node.endPosition.row + 1,
-      signature: firstLine(node.text),
+      signature: sigLine ? sigLine.slice(0, 200) : firstLine(node.text),
       parent,
     });
     const idx = this.symbols.length - 1;
@@ -288,9 +292,17 @@ const IGNORED_NAMES = new Set([
 ]);
 
 function firstLine(text: string): string {
-  const nl = text.indexOf("\n");
-  const line = nl >= 0 ? text.slice(0, nl) : text;
-  return line.trim().slice(0, 200);
+  // Skip annotation/decorator lines (@Service, @Override, @Test...) so the
+  // signature shows the actual declaration.
+  for (const raw of text.split("\n")) {
+    const line = raw.trim();
+    // also skip continuation lines of multi-line annotations
+    if (!line || line.startsWith("@") || line.startsWith('"') || line.startsWith(")")) {
+      continue;
+    }
+    return line.slice(0, 200);
+  }
+  return text.trim().slice(0, 200);
 }
 
 function stripQuotes(s: string): string {

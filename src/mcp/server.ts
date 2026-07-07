@@ -3,17 +3,15 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { z } from "zod";
 import fs from "node:fs";
 import { GraphDB, dbPath } from "../graph/db.js";
-import { findContext } from "../graph/rank.js";
+import { findContext, usageContext } from "../graph/rank.js";
+import { compactSymbolList, repoMap } from "../graph/format.js";
 import { indexRepo } from "../indexer/indexer.js";
 import type { SymbolRow } from "../types.js";
 
-function fmtSymbol(s: SymbolRow): string {
-  return `${s.kind} ${s.qualified_name}  [${s.path}:${s.start_line}-${s.end_line}]\n    ${s.signature}`;
-}
-
-function fmtList(rows: SymbolRow[], emptyMsg: string): string {
-  if (rows.length === 0) return emptyMsg;
-  return rows.map(fmtSymbol).join("\n");
+function fmtDefs(rows: SymbolRow[]): string {
+  return rows
+    .map((s) => `${s.kind} ${s.qualified_name} [${s.path}:${s.start_line}-${s.end_line}] ${s.signature}`)
+    .join("\n");
 }
 
 function text(s: string) {
@@ -30,62 +28,76 @@ export async function serveMcp(root: string): Promise<void> {
   const server = new McpServer({ name: "codegraph", version: "0.1.0" });
 
   server.registerTool(
-    "graph_stats",
+    "repo_map",
     {
       description:
-        "Statistics about the code graph for this repository: file, symbol, reference and edge counts, plus when it was last indexed.",
-      inputSchema: {},
+        "Compact orientation map of the repo: most central symbols grouped by file, signatures only. Call once when starting work in an unfamiliar codebase.",
+      inputSchema: {
+        token_budget: z.number().optional().describe("Max tokens (default 1200)"),
+      },
     },
-    async () => {
-      const s = db.stats();
-      const last = db.getMeta("last_indexed") ?? "never";
-      return text(
-        `files: ${s.files}\nsymbols: ${s.symbols}\nreferences: ${s.refs}\nedges: ${s.edges}\nlast indexed: ${last}`
-      );
+    async ({ token_budget }) => text(repoMap(db, token_budget ?? 1200))
+  );
+
+  server.registerTool(
+    "find_context",
+    {
+      description:
+        "Most relevant code for a natural-language task, ranked by lexical match and graph centrality. Top hits as source, runners-up as signatures.",
+      inputSchema: {
+        query: z.string().describe("Task or topic description"),
+        token_budget: z.number().optional().describe("Max tokens (default 2000)"),
+      },
+    },
+    async ({ query, token_budget }) => {
+      const { anchored, chunks, brief } = findContext(db, root, query, token_budget ?? 2000);
+      if (!anchored && chunks.length === 0) {
+        return text(`No relevant symbols found for: ${query}`);
+      }
+      const parts: string[] = anchored ? [anchored] : [];
+      parts.push(...chunks.map(
+        (c) =>
+          `### ${c.symbol.kind} ${c.symbol.qualified_name} (${c.symbol.path}:${c.symbol.start_line})\n\`\`\`\n${c.snippet}\n\`\`\``
+      ));
+      if (brief.length > 0) {
+        parts.push(
+          "Also relevant:\n" +
+            brief
+              .map((b) => `  ${b.symbol.qualified_name} ${b.symbol.path}:${b.symbol.start_line}`)
+              .join("\n")
+        );
+      }
+      return text(parts.join("\n\n"));
     }
   );
 
   server.registerTool(
-    "get_symbol",
+    "usages",
     {
       description:
-        "Look up a function, class, method or interface by exact name (or Qualified.Name) and get its location and signature.",
-      inputSchema: { name: z.string().describe("Exact symbol name") },
+        "Definition of a symbol plus a small code window around every reference site. The cheapest complete answer to 'change how X is used everywhere'.",
+      inputSchema: {
+        name: z.string().describe("Symbol name"),
+        window: z.number().optional().describe("Context lines around each site (default 4)"),
+      },
     },
-    async ({ name }) =>
-      text(fmtList(db.findSymbols(name), `No symbol named '${name}' found.`))
-  );
-
-  server.registerTool(
-    "search_symbols",
-    {
-      description:
-        "Fuzzy-search symbols by substring of their name. Use when you don't know the exact name.",
-      inputSchema: { pattern: z.string().describe("Substring to search for") },
-    },
-    async ({ pattern }) =>
-      text(
-        fmtList(
-          db.searchSymbols(pattern),
-          `No symbols matching '${pattern}'.`
-        )
-      )
+    async ({ name, window }) => text(usageContext(db, root, name, window ?? 4))
   );
 
   server.registerTool(
     "who_calls",
     {
       description:
-        "Find all functions/methods that call or reference the named symbol (reverse dependency lookup). Essential before changing a function's behavior or signature.",
-      inputSchema: { name: z.string().describe("Symbol name to find callers of") },
+        "Everything that calls/references a symbol (reverse dependencies). Use before changing behavior or signatures.",
+      inputSchema: { name: z.string().describe("Symbol name") },
     },
     async ({ name }) => {
       const targets = db.findSymbols(name);
-      if (targets.length === 0) return text(`No symbol named '${name}' found.`);
+      if (targets.length === 0) return text(`No symbol named '${name}'.`);
       const callers = db.callersOf(targets.map((t) => t.id));
       return text(
-        `Definitions:\n${fmtList(targets, "")}\n\nCalled/referenced by ${callers.length} symbol(s):\n` +
-          fmtList(callers, "  (nothing in the indexed graph references it)")
+        `Defined:\n${fmtDefs(targets)}\n\nReferenced by ${callers.length} symbol(s):\n` +
+          compactSymbolList(callers)
       );
     }
   );
@@ -93,17 +105,16 @@ export async function serveMcp(root: string): Promise<void> {
   server.registerTool(
     "what_it_calls",
     {
-      description:
-        "Find everything the named symbol calls or depends on (forward dependencies).",
+      description: "Everything a symbol calls/depends on (forward dependencies).",
       inputSchema: { name: z.string().describe("Symbol name") },
     },
     async ({ name }) => {
       const sources = db.findSymbols(name);
-      if (sources.length === 0) return text(`No symbol named '${name}' found.`);
+      if (sources.length === 0) return text(`No symbol named '${name}'.`);
       const callees = db.calleesOf(sources.map((s) => s.id));
       return text(
-        `'${name}' calls/references ${callees.length} indexed symbol(s):\n` +
-          fmtList(callees, "  (no resolved outgoing references)")
+        `'${name}' references ${callees.length} indexed symbol(s):\n` +
+          compactSymbolList(callees)
       );
     }
   );
@@ -112,14 +123,17 @@ export async function serveMcp(root: string): Promise<void> {
     "file_outline",
     {
       description:
-        "List every symbol defined in a file (repo-relative path, forward slashes), with line ranges. Faster than reading the file when you only need structure.",
-      inputSchema: {
-        path: z.string().describe("Repo-relative file path, e.g. src/app/main.ts"),
-      },
+        "All symbols in a file with line ranges. Cheaper than reading the file when you only need structure.",
+      inputSchema: { path: z.string().describe("Repo-relative path") },
     },
     async ({ path: p }) => {
       const rows = db.fileSymbols(p.replace(/\\/g, "/"));
-      return text(fmtList(rows, `No indexed symbols in '${p}' (wrong path, or file not indexed).`));
+      if (rows.length === 0) return text(`No indexed symbols in '${p}'.`);
+      return text(
+        rows
+          .map((s) => `${s.kind} ${s.qualified_name} :${s.start_line}-${s.end_line} ${s.signature}`)
+          .join("\n")
+      );
     }
   );
 
@@ -127,71 +141,81 @@ export async function serveMcp(root: string): Promise<void> {
     "impact_of_change",
     {
       description:
-        "Blast-radius analysis: given a file, list every symbol elsewhere in the repo that depends (directly or one hop transitively) on symbols defined in it. Use before refactoring.",
-      inputSchema: { path: z.string().describe("Repo-relative file path") },
+        "Blast radius of editing a file: external symbols that depend on it, direct and one hop transitive.",
+      inputSchema: { path: z.string().describe("Repo-relative path") },
     },
     async ({ path: p }) => {
-      const defined = db.fileSymbols(p.replace(/\\/g, "/"));
-      if (defined.length === 0) {
-        return text(`No indexed symbols in '${p}'.`);
-      }
+      const rel = p.replace(/\\/g, "/");
+      const defined = db.fileSymbols(rel);
+      if (defined.length === 0) return text(`No indexed symbols in '${p}'.`);
       const direct = db.callersOf(defined.map((d) => d.id));
-      const directExternal = direct.filter((s) => s.path !== p);
+      const directExternal = direct.filter((s) => s.path !== rel);
       const secondHop = db
         .callersOf(directExternal.map((s) => s.id))
         .filter(
-          (s) => s.path !== p && !directExternal.some((d) => d.id === s.id)
+          (s) => s.path !== rel && !directExternal.some((d) => d.id === s.id)
         );
       return text(
-        `Symbols defined in ${p}: ${defined.length}\n\n` +
-          `Direct dependents (${directExternal.length}):\n` +
-          fmtList(directExternal, "  none") +
-          `\n\nTransitive dependents, one hop (${secondHop.length}):\n` +
-          fmtList(secondHop, "  none")
+        `Direct dependents (${directExternal.length}):\n` +
+          compactSymbolList(directExternal) +
+          `\n\nTransitive, one hop (${secondHop.length}):\n` +
+          compactSymbolList(secondHop, 20)
       );
     }
   );
 
   server.registerTool(
-    "find_context",
+    "get_symbol",
     {
-      description:
-        "The main entry point: given a natural-language task description, return the most relevant code snippets from the repo, ranked by lexical match and graph centrality, packed under a token budget. Call this FIRST when starting work on an unfamiliar part of the codebase.",
-      inputSchema: {
-        query: z
-          .string()
-          .describe("Natural-language description of the task or topic"),
-        token_budget: z
-          .number()
-          .optional()
-          .describe("Approximate max tokens of context to return (default 4000)"),
-      },
+      description: "Exact-name symbol lookup: location and signature.",
+      inputSchema: { name: z.string().describe("Exact symbol name") },
     },
-    async ({ query, token_budget }) => {
-      const chunks = findContext(db, root, query, token_budget ?? 4000);
-      if (chunks.length === 0) {
-        return text(`No relevant symbols found for: ${query}`);
-      }
-      const parts = chunks.map(
-        (c) =>
-          `### ${c.symbol.kind} ${c.symbol.qualified_name} (${c.symbol.path}:${c.symbol.start_line}) [score ${c.score.toFixed(2)}]\n\`\`\`\n${c.snippet}\n\`\`\``
+    async ({ name }) => {
+      const rows = db.findSymbols(name);
+      return text(rows.length > 0 ? fmtDefs(rows) : `No symbol named '${name}'.`);
+    }
+  );
+
+  server.registerTool(
+    "search_symbols",
+    {
+      description: "Fuzzy symbol search by name substring.",
+      inputSchema: { pattern: z.string().describe("Substring") },
+    },
+    async ({ pattern }) => {
+      const rows = db.searchSymbols(pattern);
+      return text(
+        rows.length > 0 ? compactSymbolList(rows) : `No symbols matching '${pattern}'.`
       );
-      return text(parts.join("\n\n"));
     }
   );
 
   server.registerTool(
     "reindex",
     {
-      description:
-        "Re-index the repository incrementally (only changed files are re-parsed). Call if you suspect the graph is stale.",
+      description: "Incrementally re-index the repo if the graph seems stale.",
       inputSchema: {},
     },
     async () => {
       const stats = await indexRepo(root);
       return text(
-        `Reindexed: ${stats.filesIndexed} files updated, ${stats.filesRemoved} removed, ` +
+        `Reindexed: ${stats.filesIndexed} updated, ${stats.filesRemoved} removed, ` +
           `${stats.symbols} symbols, ${stats.edges} edges (${stats.durationMs}ms).`
+      );
+    }
+  );
+
+  server.registerTool(
+    "graph_stats",
+    {
+      description: "Graph size and last-indexed time.",
+      inputSchema: {},
+    },
+    async () => {
+      const s = db.stats();
+      return text(
+        `files ${s.files}, symbols ${s.symbols}, refs ${s.refs}, edges ${s.edges}, ` +
+          `last indexed ${db.getMeta("last_indexed") ?? "never"}`
       );
     }
   );

@@ -202,6 +202,36 @@ export class GraphDB {
       .all(`%${pattern}%`, limit) as SymbolRow[];
   }
 
+  allSymbolNames(): string[] {
+    return (
+      this.db.prepare("SELECT DISTINCT name FROM symbols").all() as {
+        name: string;
+      }[]
+    ).map((r) => r.name);
+  }
+
+  /** Canonical symbol name for a query token (case-insensitive), if indexed. */
+  resolveName(token: string): string | undefined {
+    const row = this.db
+      .prepare("SELECT name FROM symbols WHERE name = ? COLLATE NOCASE LIMIT 1")
+      .get(token) as { name: string } | undefined;
+    return row?.name;
+  }
+
+  /** Every reference site for a name: exact file/line plus the enclosing symbol. */
+  refsTo(name: string): { path: string; line: number; kind: string; from: string | null }[] {
+    return this.db
+      .prepare(
+        `SELECT f.path, r.line, r.kind, s.qualified_name AS "from"
+         FROM refs r
+         JOIN files f ON f.id = r.file_id
+         LEFT JOIN symbols s ON s.id = r.from_symbol_id
+         WHERE r.name = ?
+         ORDER BY f.path, r.line`
+      )
+      .all(name) as { path: string; line: number; kind: string; from: string | null }[];
+  }
+
   fileSymbols(filePath: string): SymbolRow[] {
     return this.db
       .prepare(
