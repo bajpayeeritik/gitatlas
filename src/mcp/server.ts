@@ -3,7 +3,7 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { z } from "zod";
 import fs from "node:fs";
 import { GraphDB, dbPath } from "../graph/db.js";
-import { findContext } from "../graph/rank.js";
+import { findContext, usageContext } from "../graph/rank.js";
 import { compactSymbolList, repoMap } from "../graph/format.js";
 import { indexRepo } from "../indexer/indexer.js";
 import type { SymbolRow } from "../types.js";
@@ -50,12 +50,15 @@ export async function serveMcp(root: string): Promise<void> {
       },
     },
     async ({ query, token_budget }) => {
-      const { chunks, brief } = findContext(db, root, query, token_budget ?? 2000);
-      if (chunks.length === 0) return text(`No relevant symbols found for: ${query}`);
-      const parts = chunks.map(
+      const { anchored, chunks, brief } = findContext(db, root, query, token_budget ?? 2000);
+      if (!anchored && chunks.length === 0) {
+        return text(`No relevant symbols found for: ${query}`);
+      }
+      const parts: string[] = anchored ? [anchored] : [];
+      parts.push(...chunks.map(
         (c) =>
           `### ${c.symbol.kind} ${c.symbol.qualified_name} (${c.symbol.path}:${c.symbol.start_line})\n\`\`\`\n${c.snippet}\n\`\`\``
-      );
+      ));
       if (brief.length > 0) {
         parts.push(
           "Also relevant:\n" +
@@ -66,6 +69,19 @@ export async function serveMcp(root: string): Promise<void> {
       }
       return text(parts.join("\n\n"));
     }
+  );
+
+  server.registerTool(
+    "usages",
+    {
+      description:
+        "Definition of a symbol plus a small code window around every reference site. The cheapest complete answer to 'change how X is used everywhere'.",
+      inputSchema: {
+        name: z.string().describe("Symbol name"),
+        window: z.number().optional().describe("Context lines around each site (default 4)"),
+      },
+    },
+    async ({ name, window }) => text(usageContext(db, root, name, window ?? 4))
   );
 
   server.registerTool(

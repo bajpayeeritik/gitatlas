@@ -53,15 +53,128 @@ export interface ContextChunk {
 }
 
 export interface ContextResult {
+  /** identifier(s) from the query found in the graph: def + usage windows */
+  anchored: string | null;
   /** top hits with full source snippets */
   chunks: ContextChunk[];
   /** runner-up hits, signature-only (agent can ask for more) */
   brief: { symbol: SymbolRow; score: number }[];
 }
 
+function readLines(root: string, rel: string): string[] | null {
+  try {
+    return fs.readFileSync(path.join(root, rel), "utf8").split("\n");
+  } catch {
+    return null;
+  }
+}
+
+const DEF_MAX_LINES = 14;
+
+/**
+ * Surgical context for one known symbol: its definition plus a ±window line
+ * excerpt around every reference site — instead of whole enclosing functions.
+ * This is what a task like "handle checkIsFse returning false" actually
+ * needs: the semantics of the function and each place its result is used.
+ */
+export function usageContext(
+  db: GraphDB,
+  root: string,
+  name: string,
+  window = 4,
+  maxSites = 20
+): string {
+  const defs = db.findSymbols(name);
+  if (defs.length === 0) return `No symbol named '${name}'.`;
+  const out: string[] = [];
+
+  for (const d of defs.slice(0, 3)) {
+    out.push(`${d.kind} ${d.qualified_name} [${d.path}:${d.start_line}-${d.end_line}]`);
+    const src = readLines(root, d.path);
+    if (src) {
+      const len = d.end_line - d.start_line + 1;
+      const take = Math.min(len, DEF_MAX_LINES);
+      for (let i = 0; i < take; i++) out.push(`  ${src[d.start_line - 1 + i]}`);
+      if (len > take) out.push(`  ... (+${len - take} more lines)`);
+    }
+  }
+
+  const refs = db.refsTo(name);
+  if (refs.length === 0) {
+    out.push(`\nNo indexed references to '${name}'.`);
+    return out.join("\n");
+  }
+  out.push(`\n${refs.length} reference site(s):`);
+
+  const byFile = new Map<string, typeof refs>();
+  for (const r of refs) {
+    let list = byFile.get(r.path);
+    if (!list) byFile.set(r.path, (list = []));
+    list.push(r);
+  }
+
+  let sites = 0;
+  let omitted = 0;
+  for (const [rel, rs] of byFile) {
+    const src = readLines(root, rel);
+    if (!src) continue;
+    if (sites >= maxSites) { omitted += rs.length; continue; }
+    out.push(rel);
+    // merge overlapping ±window excerpts so adjacent call sites print once
+    type Win = { s: number; e: number; at: number[]; from: Set<string> };
+    const wins: Win[] = [];
+    for (const r of rs) {
+      if (sites >= maxSites) { omitted++; continue; }
+      const s = Math.max(1, r.line - window);
+      const e = Math.min(src.length, r.line + window);
+      const last = wins[wins.length - 1];
+      if (last && s <= last.e + 1) {
+        last.e = Math.max(last.e, e);
+        last.at.push(r.line);
+        if (r.from) last.from.add(r.from);
+      } else {
+        wins.push({ s, e, at: [r.line], from: new Set(r.from ? [r.from] : []) });
+      }
+      sites++;
+    }
+    for (const w of wins) {
+      const where = w.from.size > 0 ? ` in ${[...w.from].join(", ")}` : "";
+      out.push(`  @${w.at.join(",")}${where}`);
+      for (let i = w.s; i <= w.e; i++) out.push(`  ${i}│ ${src[i - 1]}`);
+    }
+  }
+  if (omitted > 0) out.push(`(+${omitted} more sites omitted)`);
+  return out.join("\n");
+}
+
+/** camelCase/snake_case tokens in the query that name indexed symbols. */
+export function detectAnchors(db: GraphDB, query: string, max = 3): string[] {
+  const tokens = [...new Set(query.match(/[A-Za-z_][A-Za-z0-9_]{2,}/g) ?? [])]
+    // longer tokens first: identifiers beat words like "handle" or "return"
+    .sort((a, b) => b.length - a.length);
+  const anchors: string[] = [];
+  for (const t of tokens) {
+    if (anchors.length >= max) break;
+    const canonical = db.resolveName(t);
+    if (canonical && !anchors.includes(canonical)) anchors.push(canonical);
+  }
+  return anchors;
+}
+
 const SNIPPET_MAX_LINES = 40;
 const MAX_FULL_SNIPPETS = 3;
 const MAX_BRIEF = 12;
+
+const TASK_STOPWORDS = new Set([
+  "need", "needs", "needed", "add", "adding", "additional", "change",
+  "changes", "changed", "handle", "handles", "handling", "case", "cases",
+  "return", "returns", "returned", "returning", "function", "method",
+  "class", "where", "when", "which", "what", "also", "make", "making",
+  "implement", "implementing", "support", "update", "updating", "fix",
+  "fixing", "code", "file", "files", "true", "false", "null", "undefined",
+  "the", "and", "for", "with", "from", "into", "this", "that", "should",
+  "want", "please", "new", "use", "using", "value", "values",
+]);
 
 /**
  * Rank symbols against a natural-language query (lexical match on name,
@@ -76,11 +189,34 @@ export function findContext(
   query: string,
   tokenBudget: number
 ): ContextResult {
-  const terms = query
+  // Identifiers in the query that exist in the graph get surgical treatment:
+  // definition + usage windows, far cheaper than ranked full snippets.
+  const anchors = detectAnchors(db, query);
+  let anchored: string | null = null;
+  let budget = tokenBudget;
+  const anchorDefIds = new Set<number>();
+  if (anchors.length > 0) {
+    anchored = anchors.map((a) => usageContext(db, root, a)).join("\n\n");
+    const maxChars = Math.floor(budget * 4 * 0.8);
+    if (anchored.length > maxChars) {
+      anchored = anchored.slice(0, maxChars) + "\n... (truncated; raise token_budget)";
+    }
+    budget -= Math.ceil(anchored.length / 4);
+    for (const a of anchors) {
+      for (const d of db.findSymbols(a)) anchorDefIds.add(d.id);
+    }
+  }
+
+  const anchorSet = new Set(anchors.map((a) => a.toLowerCase()));
+  const allTerms = query
     .toLowerCase()
     .split(/[^a-z0-9_]+/)
-    .filter((t) => t.length > 2);
-  if (terms.length === 0) return { chunks: [], brief: [] };
+    .filter((t) => t.length > 2 && !anchorSet.has(t));
+  // Generic task-phrasing words rank nothing useful ("handle the case where
+  // X returns false" should score on X's domain, not on "handle"/"false").
+  let terms = allTerms.filter((t) => !TASK_STOPWORDS.has(t));
+  if (terms.length === 0) terms = allTerms;
+  if (terms.length === 0) return { anchored, chunks: [], brief: [] };
 
   const ranks = pagerank(db);
   let maxRank = 0;
@@ -106,7 +242,10 @@ export function findContext(
 
   const chunks: ContextChunk[] = [];
   const brief: { symbol: SymbolRow; score: number }[] = [];
-  let budgetLeft = tokenBudget;
+  // With anchors satisfied, lexical extras are secondary: signatures only.
+  const maxFull = anchored ? 0 : MAX_FULL_SNIPPETS;
+  const maxBrief = anchored ? 5 : MAX_BRIEF;
+  let budgetLeft = budget;
   const fileCache = new Map<string, string[] | null>();
   const overlaps = (s: SymbolRow) =>
     chunks.some(
@@ -119,8 +258,9 @@ export function findContext(
 
   for (const { symbol, score } of scored) {
     if (budgetLeft <= 0) break;
+    if (anchorDefIds.has(symbol.id)) continue;
     if (overlaps(symbol)) continue;
-    if (chunks.length < MAX_FULL_SNIPPETS) {
+    if (chunks.length < maxFull) {
       let lines = fileCache.get(symbol.path);
       if (lines === undefined) {
         try {
@@ -144,12 +284,12 @@ export function findContext(
       budgetLeft -= cost;
       chunks.push({ symbol, score, snippet });
     } else {
-      if (brief.length >= MAX_BRIEF) break;
+      if (brief.length >= maxBrief) break;
       const cost = 20;
       if (cost > budgetLeft) break;
       budgetLeft -= cost;
       brief.push({ symbol, score });
     }
   }
-  return { chunks, brief };
+  return { anchored, chunks, brief };
 }

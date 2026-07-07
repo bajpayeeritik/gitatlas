@@ -3,7 +3,7 @@ import { Command } from "commander";
 import path from "node:path";
 import { indexRepo } from "./indexer/indexer.js";
 import { GraphDB } from "./graph/db.js";
-import { findContext } from "./graph/rank.js";
+import { findContext, usageContext } from "./graph/rank.js";
 import { compactSymbolList, repoMap } from "./graph/format.js";
 import { serveMcp } from "./mcp/server.js";
 import { installHooks, uninstallHooks } from "./hook.js";
@@ -185,6 +185,18 @@ program
   });
 
 program
+  .command("usages <name>")
+  .description("Definition + a code window around every reference site")
+  .option("-r, --root <path>", "repository root", process.cwd())
+  .option("-w, --window <lines>", "context lines around each site", "4")
+  .action((name, opts) => {
+    const root = resolveRoot(opts);
+    const db = new GraphDB(root);
+    console.log(usageContext(db, root, name, parseInt(opts.window, 10)));
+    db.close();
+  });
+
+program
   .command("repo-map")
   .description("Compact orientation map: most central symbols, signatures only")
   .option("-r, --root <path>", "repository root", process.cwd())
@@ -203,10 +215,11 @@ program
   .action((queryWords, opts) => {
     const root = resolveRoot(opts);
     const db = new GraphDB(root);
-    const { chunks, brief } = findContext(
+    const { anchored, chunks, brief } = findContext(
       db, root, queryWords.join(" "), parseInt(opts.budget, 10)
     );
-    if (chunks.length === 0) console.log("No relevant symbols found.");
+    if (anchored) console.log(anchored);
+    if (!anchored && chunks.length === 0) console.log("No relevant symbols found.");
     for (const c of chunks) {
       console.log(
         `\n### ${c.symbol.kind} ${c.symbol.qualified_name} (${c.symbol.path}:${c.symbol.start_line})`
