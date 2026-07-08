@@ -197,5 +197,3 @@ Issues and PRs welcome. `src/indexer/` (tree-sitter extraction), `src/graph/` (S
 ## License
 
 MIT
-
-<!-- test: docs-only change should skip the action -->

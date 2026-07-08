@@ -6,6 +6,11 @@ import type { SymbolRow } from "./types.js";
 
 export const REPORT_MARKER = "<!-- gitatlas-blast-radius -->";
 
+/** Report format version, for tests and future comment migrations. */
+export function reportFormatVersion(): number {
+  return 1;
+}
+
 /**
  * Markdown blast-radius report for a set of changed files (a PR, typically).
  * First line is a stable HTML marker so a CI bot can find and update its own
