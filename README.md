@@ -194,6 +194,17 @@ If you want 30-language editor-session indexing with a bundled binary and file w
 
 Issues and PRs welcome. `src/indexer/` (tree-sitter extraction), `src/graph/` (SQLite store, ranking, formatting), `src/mcp/` (server), `src/cli.ts`. `npm run build` then `node dist/cli.js index --root <some-repo>` is the whole dev loop.
 
+### Releasing
+
+Publishing is automated. Bump the version in `package.json`, then push a matching tag:
+
+```bash
+npm version patch   # or minor / major — updates package.json and creates the commit
+git push && git push --tags
+```
+
+The `release` workflow verifies the tag matches `package.json`, builds, and publishes to npm with provenance. It needs one repo secret, `NPM_TOKEN` — a granular access token with **read/write** on packages and **bypass 2FA** enabled (Settings → Secrets and variables → Actions).
+
 ## License
 
 MIT
