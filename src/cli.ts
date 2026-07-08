@@ -1,10 +1,12 @@
 #!/usr/bin/env node
 import { Command } from "commander";
+import fs from "node:fs";
 import path from "node:path";
 import { indexRepo } from "./indexer/indexer.js";
 import { GraphDB } from "./graph/db.js";
 import { findContext, usageContext } from "./graph/rank.js";
 import { compactSymbolList, repoMap } from "./graph/format.js";
+import { impactReport } from "./report.js";
 import { serveMcp } from "./mcp/server.js";
 import { installHooks, uninstallHooks } from "./hook.js";
 
@@ -181,6 +183,22 @@ program
       console.log(`${defined.length} symbols defined; ${external.length} external dependent(s):`);
       console.log(compactSymbolList(external));
     }
+    db.close();
+  });
+
+program
+  .command("impact-report [files...]")
+  .description(
+    "Markdown blast-radius report for changed files (CI / PR comments); reads newline-separated paths from stdin when no args given"
+  )
+  .option("-r, --root <path>", "repository root", process.cwd())
+  .action((files: string[], opts) => {
+    let list = files;
+    if (list.length === 0) {
+      list = fs.readFileSync(0, "utf8").split("\n");
+    }
+    const db = new GraphDB(resolveRoot(opts));
+    console.log(impactReport(db, list));
     db.close();
   });
 
